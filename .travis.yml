@@ -4,8 +4,9 @@ install:
   - sudo apt-get install luajit
   - sudo apt-get install luarocks
   - sudo luarocks install busted
-  - cat $(which busted)
-  - cat /usr/local/lib/luarocks/rocks/busted/2.0.rc1-0/bin/busted
-  - which luajit-2.0.0-beta9
+  - sudo luarocks install moonscript
+  - sudo luarocks install luacrypto
+  - sudo luarocks install luaposix
+  - sudo luarocks install https://raw.githubusercontent.com/leafo/lua-date/master/date-dev-1.rockspec
 
-script: echo 'hi'
+script: luajit-2.0.0-beta9 /usr/local/lib/luarocks/rocks/busted/2.0.rc1-0/bin/busted
