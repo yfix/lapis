@@ -5,6 +5,7 @@ install:
   - sudo apt-get install luarocks
   - sudo luarocks install busted
   - cat $(which busted)
+  - cat /usr/local/lib/luarocks/rocks/busted/2.0.rc1-0/bin/busted
   - which luajit-2.0.0-beta9
 
 script: echo 'hi'
