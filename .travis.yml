@@ -1,12 +1,12 @@
 language: c
 
 install:
-  - sudo apt-get install luajit
   - sudo apt-get install luarocks
   - sudo luarocks install busted
   - sudo luarocks install moonscript
   - sudo luarocks install luacrypto
   - sudo luarocks install luaposix
   - sudo luarocks install https://raw.githubusercontent.com/leafo/lua-date/master/date-dev-1.rockspec
+  - ./install_luajit.sh
 
-script: luajit-2.0.0-beta9 /usr/local/lib/luarocks/rocks/busted/2.0.rc1-0/bin/busted
+script: ./luajit /usr/local/lib/luarocks/rocks/busted/2.0.rc1-0/bin/busted
