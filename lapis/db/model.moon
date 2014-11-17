@@ -1,7 +1,7 @@
 
 db = require "lapis.db"
 
-import underscore, escape_pattern, uniquify from require "lapis.util"
+import underscore, escape_pattern, uniquify, get_fields from require "lapis.util"
 import insert, concat from table
 
 cjson = require "cjson"
@@ -9,9 +9,114 @@ import OffsetPaginator from require "lapis.db.pagination"
 
 local *
 
+-- TODO: need a proper singularize
+singularize = (name)->
+  name\match"^(.*)s$" or name
+
+class Enum
+  -- convert string to number, or let number pass through
+  for_db: (key) =>
+    if type(key) == "string"
+      (assert @[key], "enum does not contain key #{key}")
+    elseif type(key) == "number"
+      assert @[key], "enum does not contain val #{key}"
+      key
+    else
+      error "don't know how to handle type #{type key} for enum"
+
+  -- convert number to string, or let string pass through
+  to_name: (val) =>
+    if type(val) == "string"
+      assert @[val], "enum does not contain key #{val}"
+      val
+    elseif type(val) == "number"
+      key = @[val]
+      (assert key, "enum does not contain val #{val}")
+    else
+      error "don't know how to handle type #{type val} for enum"
+
+enum = (tbl) ->
+  keys = [k for k in pairs tbl]
+  for key in *keys
+    tbl[tbl[key]] = key
+
+  setmetatable tbl, Enum.__base
+
+-- class Things extends Model
+--   @relations: {
+--     {"user", has_one: "Users"}
+--     {"posts", has_many: "Posts", pager: true, order: "id ASC"}
+--   }
+add_relations = (relations) =>
+  for relation in *relations
+    name = assert relation[1], "missing relation name"
+    fn_name = relation.as or "get_#{name}"
+    assert_model = (source) ->
+      models = require "models"
+      with m = models[source]
+        error "failed to find model `#{source}` for relationship" unless m
+
+    if source = relation.fetch
+      assert type(source) == "function", "Expecting function for `fetch` relation"
+      @__base[fn_name] = =>
+        existing = @[name]
+        return existing if existing != nil
+        with obj = source @
+          @[name] = obj
+
+    if source = relation.has_one
+      assert type(source) == "string", "Expecting model name for `has_one` relation"
+      column_name = "#{name}_id"
+      @__base[fn_name] = =>
+        existing = @[name]
+        return existing if existing != nil
+        model = assert_model source
+
+        clause = {
+          [relation.key or "#{singularize @@table_name!}_id"]: @[@@primary_keys!]
+        }
+
+        with obj = model\find clause
+          @[name] = obj
+
+
+    if source = relation.belongs_to
+      assert type(source) == "string", "Expecting model name for `belongs_to` relation"
+      column_name = "#{name}_id"
+
+      @__base[fn_name] = =>
+        existing = @[name]
+        return existing if existing != nil
+        model = assert_model source
+        with obj = model\find @[column_name]
+          @[name] = obj
+
+    if source = relation.has_many
+      if relation.pager != false
+        foreign_key = relation.key
+        @__base[fn_name] = (opts) =>
+          model = assert_model source
+          clause = {
+            [foreign_key or "#{singularize @@table_name!}_id"]: @[@@primary_keys!]
+          }
+
+          if where = relation.where
+            for k,v in pairs where
+              clause[k] = v
+
+          clause = db.encode_clause clause
+
+          model\paginated "where #{clause}", opts
+      else
+        error "not yet"
+
 class Model
   @timestamp: false
   @primary_key: "id"
+
+  @__inherited: (child) =>
+    if r = child.relations
+      add_relations child, r
 
   @primary_keys: =>
     if type(@primary_key) == "table"
@@ -82,6 +187,7 @@ class Model
 
     unpack(db.select query).c
 
+
   -- include references to this model in a list of records based on a foreign
   -- key
   -- Examples:
@@ -138,9 +244,7 @@ class Model
         field_name = if opts and opts.as
           opts.as
         elseif flip
-          -- TODO: need a proper singularize
-          tbl = @table_name!
-          tbl\match"^(.*)s$" or tbl
+          singularize @table_name!
         else
           foreign_key\match "^(.*)_#{escape_pattern(@primary_key)}$"
 
@@ -201,7 +305,18 @@ class Model
           return nil, err
 
     values._timestamp = true if @timestamp
-    res = db.insert @table_name!, values, @primary_keys!
+
+    local returning
+    for k, v in pairs values
+      if db.is_raw v
+        returning or= {@primary_keys!}
+        table.insert returning, k
+
+    res = if returning
+      db.insert @table_name!, values, unpack returning
+    else
+      db.insert @table_name!, values, @primary_keys!
+
     if res
       for k,v in pairs res[1]
         values[k] = v
@@ -270,13 +385,14 @@ class Model
     else
       {first, ...}
 
-    return if next(columns) == nil
-    values = { col, @[col] for col in *columns }
+    return nil, "nothing to update" if next(columns) == nil
 
     if @@constraints
-      for key, value in pairs values
-        if err = @@_check_constraint key, value, @
+      for _, column in pairs columns
+        if err = @@_check_constraint column, @[column], @
           return nil, err
+
+    values = { col, @[col] for col in *columns }
 
     -- update options
     nargs = select "#", ...
@@ -301,6 +417,9 @@ class Model
     tbl_name = db.escape_identifier @@table_name!
     res = unpack db.select "#{fields} from #{tbl_name} where #{cond}"
 
+    unless res
+      error "failed to find row to refresh from, did the primary key change?"
+
     if field_names
       for field in *field_names
         @[field] = res[field]
@@ -315,5 +434,5 @@ class Model
 
     @
 
-{ :Model }
+{ :Model, :Enum, :enum }
 

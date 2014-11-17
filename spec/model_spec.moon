@@ -166,6 +166,42 @@ describe "lapis.db.model", ->
       'SELECT * from "things" where "id" > 123 and (color = blue) order by "id" ASC limit 10'
     }, queries
 
+  it "should ordered paginate with multiple keys", ->
+    import OrderedPaginator from require "lapis.db.pagination"
+    class Things extends Model
+
+    query_mock['SELECT'] = { { id: 101, updated_at: 300 }, { id: 102, updated_at: 301 } }
+
+    pager = OrderedPaginator Things, {"id", "updated_at"}, "where color = blue"
+
+    res, next_id, next_updated_at = pager\get_page!
+
+    assert.same 102, next_id
+    assert.same 301, next_updated_at
+
+    pager\after!
+    pager\before!
+
+    pager\after 100
+    pager\before 32
+
+    pager\after 100, 200
+    pager\before 32, 42
+
+    assert_queries {
+      'SELECT * from "things" where color = blue order by "id" ASC, "updated_at" ASC limit 10'
+
+      'SELECT * from "things" where color = blue order by "id" ASC, "updated_at" ASC limit 10'
+      'SELECT * from "things" where color = blue order by "id" DESC, "updated_at" DESC limit 10'
+
+      'SELECT * from "things" where "id" > 100 and (color = blue) order by "id" ASC, "updated_at" ASC limit 10'
+      'SELECT * from "things" where "id" < 32 and (color = blue) order by "id" DESC, "updated_at" DESC limit 10'
+
+      'SELECT * from "things" where "id" > 100 and "updated_at" > 200 and (color = blue) order by "id" ASC, "updated_at" ASC limit 10'
+      'SELECT * from "things" where "id" < 32 and "updated_at" < 42 and (color = blue) order by "id" DESC, "updated_at" DESC limit 10'
+    }, queries
+
+
   it "should create model", ->
     class Things extends Model
     query_mock['INSERT'] = { { id: 101 } }
@@ -392,4 +428,221 @@ describe "lapis.db.model", ->
 
       assert.same { nil, "missing `name`"}, { Things\create! }
 
+    it "should allow to update values on create and on update", ->
+      query_mock['INSERT'] = { { id: 101 } }
+
+      class Things extends Model
+        @constraints: {
+          name: (val, column, values) => values.name = 'changed from ' .. val
+        }
+
+      thing = Things\create name: 'create'
+      thing\update name: 'update'
+
+      assert_queries {
+        [[INSERT INTO "things" ("name") VALUES ('changed from create') RETURNING "id"]]
+        [[UPDATE "things" SET "name" = 'changed from update' WHERE "id" = 101]]
+      }, queries
+
+
+  describe "relations #xxx", ->
+    local models
+
+    before_each ->
+      models = {}
+      package.loaded.models = models
+
+    it "should make belongs_to getter", ->
+      query_mock['SELECT'] = { { id: 101 } }
+
+      models.Users = class extends Model
+        @primary_key: "id"
+
+      class Posts extends Model
+        @relations: {
+          {"user", belongs_to: "Users"}
+        }
+
+      post = Posts!
+      post.user_id = 123
+
+      assert post\get_user!
+      assert post\get_user!
+
+      assert_queries {
+        'SELECT * from "users" where "id" = 123 limit 1'
+      }, queries
+
+
+    it "should make fetch getter", ->
+      called = 0
+
+      class Posts extends Model
+        @relations: {
+          { "thing", fetch: =>
+            called += 1
+            "yes"
+          }
+        }
+
+      post = Posts!
+      post.user_id = 123
+
+      assert.same "yes", post\get_thing!
+      assert.same "yes", post\get_thing!
+      assert.same 1, called
+
+      assert_queries { }, queries
+
+    it "should make belongs_to getters for extend syntax", ->
+      query_mock['SELECT'] = { { id: 101 } }
+
+      models.Users = class extends Model
+        @primary_key: "id"
+
+      m = Model\extend "the_things", {
+        relations: {
+          {"user", belongs_to: "Users"}
+        }
+      }
+
+      obj = m!
+      obj.user_id = 101
+
+
+      assert obj\get_user! == obj\get_user!
+
+      assert_queries {
+        'SELECT * from "users" where "id" = 101 limit 1'
+      }, queries
+
+    it "should make has_one getter", ->
+      query_mock['SELECT'] = { { id: 101 } }
+
+      models.Users = class Users extends Model
+        @relations: {
+          {"user_profile", has_one: "UserProfiles"}
+        }
+
+      models.UserProfiles = class UserProfiles extends Model
+
+      user = Users!
+      user.id = 123
+      user\get_user_profile!
+
+      assert_queries {
+        'SELECT * from "user_profiles" where "user_id" = 123 limit 1'
+      }, queries
+
+    it "should make has_one getter with custom key", ->
+      query_mock['SELECT'] = { { id: 101 } }
+
+      models.UserData = class extends Model
+
+      models.Users = class Users extends Model
+        @relations: {
+          {"data", has_one: "UserData", key: "owner_id"}
+        }
+
+      user = Users!
+      user.id = 123
+      assert user\get_data!
+
+      assert_queries {
+        'SELECT * from "user_data" where "owner_id" = 123 limit 1'
+      }, queries
+
+    it "should make has_many getter", ->
+      query_mock['SELECT'] = { { id: 101 } }
+
+      models.Posts = class extends Model
+      models.Users = class extends Model
+        @relations: {
+          {"posts", has_many: "Posts"}
+          {"more_posts", has_many: "Posts", where: {color: "blue"}}
+        }
+
+      user = models.Users!
+      user.id = 1234
+
+      user\get_posts!\get_page 1
+      user\get_posts!\get_page 2
+
+      user\get_more_posts!\get_page 2
+
+      user\get_posts(per_page: 44)\get_page 3
+
+      assert_queries {
+        'SELECT * from "posts" where "user_id" = 1234 limit 10 offset 0 '
+        'SELECT * from "posts" where "user_id" = 1234 limit 10 offset 10 '
+        {
+          [[SELECT * from "posts" where "user_id" = 1234 AND "color" = 'blue' limit 10 offset 10 ]]
+          [[SELECT * from "posts" where "color" = 'blue' AND "user_id" = 1234 limit 10 offset 10 ]]
+        }
+        'SELECT * from "posts" where "user_id" = 1234 limit 44 offset 88 '
+      }, queries
+
+  describe "enum", ->
+    import enum from require "lapis.db.model"
+
+    it "should create an enum", ->
+      e = enum {
+        hello: 1
+        world: 2
+        foo: 3
+        bar: 3
+      }
+
+    describe "with enum", ->
+      local e
+      before_each ->
+        e = enum {
+          hello: 1
+          world: 2
+          foo: 3
+          bar: 4
+        }
+
+      it "should get enum values", ->
+        assert.same "hello", e[1]
+        assert.same "world", e[2]
+        assert.same "foo", e[3]
+        assert.same "bar", e[4]
+
+        assert.same 1, e.hello
+        assert.same 2, e.world
+        assert.same 3, e.foo
+        assert.same 4, e.bar
+
+      it "should get enum for_db", ->
+        assert.same 1, e\for_db "hello"
+        assert.same 1, e\for_db 1
+
+        assert.same 2, e\for_db "world"
+        assert.same 2, e\for_db 2
+
+        assert.same 3, e\for_db "foo"
+        assert.same 3, e\for_db 3
+
+        assert.same 4, e\for_db "bar"
+        assert.same 4, e\for_db 4
+
+        assert.has_error ->
+          e\for_db "far"
+
+        assert.has_error ->
+          e\for_db 5
+
+      it "should get enum to_name", ->
+        assert.same "hello", e\to_name "hello"
+        assert.same "hello", e\to_name 1
+
+        assert.same "world", e\to_name "world"
+        assert.same "world", e\to_name 2
+
+        assert.same "foo", e\to_name "foo"
+        assert.same "foo", e\to_name 3
+
+        assert.same "bar", e\to_name "bar"
+        assert.same "bar", e\to_name 4
 
